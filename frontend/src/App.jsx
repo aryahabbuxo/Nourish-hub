@@ -21,6 +21,7 @@ import {
   Info,
   Send,
   X,
+  Star,
 } from "lucide-react";
 
 const API_URL = "http://localhost:3001/api";
@@ -118,18 +119,45 @@ class ErrorBoundary extends React.Component {
     return this.props.children;
   }
 }
+const StarRating = ({ rating, onRatingChange, readonly = false }) => {
+  const [hoverRating, setHoverRating] = useState(0);
+
+  return (
+    <div className="flex gap-1">
+      {[1, 2, 3, 4, 5].map((star) => (
+        <button
+          key={star}
+          type="button"
+          disabled={readonly}
+          onMouseEnter={() => !readonly && setHoverRating(star)}
+          onMouseLeave={() => !readonly && setHoverRating(0)}
+          onClick={() => !readonly && onRatingChange(star)}
+          className={`transition-all ${readonly ? 'cursor-default' : 'cursor-pointer hover:scale-110'}`}
+        >
+          <Star
+            className={`w-8 h-8 ${
+              star <= (hoverRating || rating)
+                ? "fill-yellow-400 text-yellow-400"
+                : "text-gray-300"
+            }`}
+          />
+        </button>
+      ))}
+    </div>
+  );
+};
 
 const StudentDashboard = ({ showToast }) => {
   const [lunchPreference, setLunchPreference] = useState({ eating: "yes", portion: "medium" });
   const [dinnerPreference, setDinnerPreference] = useState({ eating: "yes", portion: "medium" });
   const [feedback, setFeedback] = useState("");
+  const [feedbackRating, setFeedbackRating] = useState(0);
   const [activeTab, setActiveTab] = useState("booking");
-    // ✅ Voting state
-  const [voteOptions, setVoteOptions] = useState({ lunch: [], dinner: [] });
-  const [selectedVoteLunch, setSelectedVoteLunch] = useState("");
-  const [selectedVoteDinner, setSelectedVoteDinner] = useState("");
-  const [voteResults, setVoteResults] = useState({ lunch: {}, dinner: {} });
-
+  
+  // Weekly menu voting state
+  const [weeklyMenuOptions, setWeeklyMenuOptions] = useState({});
+  const [selectedWeeklyVotes, setSelectedWeeklyVotes] = useState({});
+  const [weeklyVoteResults, setWeeklyVoteResults] = useState({});
 
   const [menu, setMenu] = useState({ lunch: null, dinner: null });
   const [crowdStats, setCrowdStats] = useState({ lunch: 0, dinner: 0 });
@@ -145,10 +173,10 @@ const StudentDashboard = ({ showToast }) => {
     logger.info("StudentDashboard mounted");
     fetchMenu();
     fetchCrowdStats();
-    fetchVoteOptions();
-    fetchVoteResults();
+    fetchWeeklyMenuOptions();
+    fetchWeeklyVoteResults();
     return () => logger.info("StudentDashboard unmounted");
-  }, []);
+  }, []);;
 
   const fetchMenu = async () => {
     try {
@@ -162,53 +190,54 @@ const StudentDashboard = ({ showToast }) => {
   };
 
   const fetchCrowdStats = async () => {
-    try {
-      const response = await fetch(`${API_URL}/stats/today`);
-      const data = await response.json();
-      setCrowdStats({
-        lunch: data.lunch.yes + data.lunch.partial,
-        dinner: data.dinner.yes + data.dinner.partial,
-      });
-    } catch (error) {
-      logger.error("Error fetching crowd stats", error);
-    }
-  };
+  try {
+    const response = await fetch(`${API_URL}/stats/today`);
+    const data = await response.json();
+    setCrowdStats({
+      lunch: (data.lunch.yes || 0) + (data.lunch.limited || 0) + (data.lunch.tiffin || 0),
+      dinner: (data.dinner.yes || 0) + (data.dinner.limited || 0) + (data.dinner.tiffin || 0),
+    });
+  } catch (error) {
+    logger.error("Error fetching crowd stats", error);
+  }
+};
 
-  const fetchVoteOptions = async () => {
+  const fetchWeeklyMenuOptions = async () => {
     try {
-      const res = await fetch(`${API_URL}/voting/options`);
+      const res = await fetch(`${API_URL}/voting/weekly-options`);
       const data = await res.json();
-      setVoteOptions(data);
+      setWeeklyMenuOptions(data);
     } catch (err) {
-      logger.error("Error loading vote options", err);
+      logger.error("Error loading weekly menu options", err);
     }
   };
 
-  const fetchVoteResults = async () => {
+  const fetchWeeklyVoteResults = async () => {
     try {
-      const res = await fetch(`${API_URL}/voting/results`);
+      const res = await fetch(`${API_URL}/voting/weekly-results`);
       const data = await res.json();
-      setVoteResults(data);
+      setWeeklyVoteResults(data);
     } catch (err) {
       logger.error("Error loading vote results", err);
     }
   };
 
-  const submitVote = async (mealType) => {
+  const submitWeeklyVote = async (day, mealType) => {
     try {
-      const selected =
-        mealType === "lunch" ? selectedVoteLunch : selectedVoteDinner;
+      const voteKey = `${day}_${mealType}`;
+      const selected = selectedWeeklyVotes[voteKey];
 
       if (!selected) {
         showToast("Please select an option to vote!", "", "error");
         return;
       }
 
-      const res = await fetch(`${API_URL}/voting/vote`, {
+      const res = await fetch(`${API_URL}/voting/weekly-vote`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           student_id: studentId,
+          day: day,
           meal_type: mealType,
           option_text: selected,
         }),
@@ -217,8 +246,8 @@ const StudentDashboard = ({ showToast }) => {
       const data = await res.json();
 
       if (data.success) {
-        showToast("Vote submitted ✅", `You voted for: ${selected}`, "success");
-        fetchVoteResults();
+        showToast("Vote submitted ✅", `${day} ${mealType}: ${selected}`, "success");
+        fetchWeeklyVoteResults();
       } else {
         showToast("Vote failed", "", "error");
       }
@@ -230,66 +259,77 @@ const StudentDashboard = ({ showToast }) => {
 
 
   const handleConfirmMeal = async (mealType) => {
-    try {
-      setLoading(true);
-      const preference = mealType === "lunch" ? lunchPreference : dinnerPreference;
-      logger.info(`Confirming ${mealType} preference`, preference);
+  try {
+    setLoading(true);
+    const preference = mealType === "lunch" ? lunchPreference : dinnerPreference;
+    logger.info(`Confirming ${mealType} preference`, preference);
 
-      const response = await fetch(`${API_URL}/preferences`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          student_id: studentId,
-          meal_type: mealType,
-          eating_status: preference.eating,
-          portion_size: preference.portion,
-        }),
-      });
+    const response = await fetch(`${API_URL}/preferences`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        student_id: studentId,
+        meal_type: mealType,
+        eating_status: preference.eating,
+        portion_size: preference.portion,
+      }),
+    });
 
-      const data = await response.json();
+    const data = await response.json();
 
-      if (data.success) {
-        const eatStatus =
-          preference.eating === "yes"
-            ? "eat"
-            : preference.eating === "partial"
-            ? "eat limited items"
-            : "skip";
+    if (data.success) {
+      const portionGrams = {
+        small: "200g",
+        medium: "300g",
+        large: "400g"
+      };
 
-        showToast(
-          `${mealType.charAt(0).toUpperCase() + mealType.slice(1)} preference confirmed!`,
-          `You'll ${eatStatus} - ${preference.portion} portion`,
-          "success"
-        );
-        fetchCrowdStats();
-      } else {
-        throw new Error("Failed to save preference");
-      }
-    } catch (error) {
-      logger.error(`Error confirming ${mealType}`, error);
-      showToast("Failed to confirm meal preference", "", "error");
-    } finally {
-      setLoading(false);
+      const eatStatus =
+        preference.eating === "yes"
+          ? "eat full meal"
+          : preference.eating === "limited"
+          ? "eat selected items"
+          : preference.eating === "tiffin"
+          ? "take tiffin"
+          : "skip";
+
+      showToast(
+        `${mealType.charAt(0).toUpperCase() + mealType.slice(1)} preference confirmed!`,
+        `You'll ${eatStatus} - ${portionGrams[preference.portion]}`,
+        "success"
+      );
+      
+      // ✅ REFRESH CROWD STATS AFTER SAVING
+      fetchCrowdStats();
+      
+    } else {
+      throw new Error("Failed to save preference");
     }
-  };
+  } catch (error) {
+    logger.error(`Error confirming ${mealType}`, error);
+    showToast("Failed to confirm meal preference", "", "error");
+  } finally {
+    setLoading(false);
+  }
+};
 
   const handleSubmitFeedback = async () => {
     try {
-      if (!feedback.trim()) {
-        showToast("Please enter your feedback", "", "error");
+      if (feedbackRating === 0) {
+        showToast("Please provide a star rating", "", "error");
         return;
       }
 
       setLoading(true);
-      logger.info("Submitting feedback", { feedback });
+      logger.info("Submitting feedback", { feedback, rating: feedbackRating });
 
       const response = await fetch(`${API_URL}/feedback`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           student_id: studentId,
-          feedback_text: feedback,
-          rating: "neutral",
+          feedback_text: feedback || `${feedbackRating}-star rating`,
+          rating: feedbackRating,
           meal_type: "general",
         }),
       });
@@ -299,43 +339,13 @@ const StudentDashboard = ({ showToast }) => {
       if (data.success) {
         showToast("Feedback submitted successfully!", "", "success");
         setFeedback("");
+        setFeedbackRating(0);
       } else {
         throw new Error("Failed to submit feedback");
       }
     } catch (error) {
       logger.error("Error submitting feedback", error);
       showToast("Failed to submit feedback", "", "error");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleQuickRating = async (rating) => {
-    try {
-      setLoading(true);
-      logger.info("Quick rating submitted", { rating });
-
-      const response = await fetch(`${API_URL}/feedback`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          student_id: studentId,
-          feedback_text: rating,
-          rating: rating === "Excellent Food" ? "positive" : "needs_improvement",
-          meal_type: "general",
-        }),
-      });
-
-      const data = await response.json();
-
-      if (data.success) {
-        showToast(`Thank you for rating the food as "${rating}"!`, "", "success");
-      } else {
-        throw new Error("Failed to submit rating");
-      }
-    } catch (error) {
-      logger.error("Error submitting rating", error);
-      showToast("Failed to submit rating", "", "error");
     } finally {
       setLoading(false);
     }
@@ -376,8 +386,9 @@ const StudentDashboard = ({ showToast }) => {
             <h4 className="font-medium mb-3">Will you eat this meal?</h4>
             <div className="space-y-2">
               {[
-                { value: "yes", label: "Yes, I'll eat", icon: CheckCircle2, color: "text-green-600" },
-                { value: "partial", label: "Partial (Limited items)", icon: Info, color: "text-orange-600" },
+                { value: "yes", label: "Yes, full meal", icon: CheckCircle2, color: "text-green-600" },
+                { value: "limited", label: "Selected items only", icon: Info, color: "text-orange-600" },
+                { value: "tiffin", label: "Take tiffin/parcel", icon: Info, color: "text-purple-600" },
                 { value: "skip", label: "Skip this meal", icon: X, color: "text-red-600" },
               ].map(({ value, label, icon: Icon, color }) => (
                 <button
@@ -401,9 +412,9 @@ const StudentDashboard = ({ showToast }) => {
               <h4 className="font-medium mb-3">Portion Size</h4>
               <div className="grid grid-cols-3 gap-2">
                 {[
-                  { value: "small", label: "Small", desc: "75% portion", dots: 1 },
-                  { value: "medium", label: "Medium", desc: "100% portion", dots: 2 },
-                  { value: "large", label: "Large", desc: "125% portion", dots: 3 },
+                  { value: "small", label: "Small", desc: "200g", dots: 1 },
+                  { value: "medium", label: "Medium", desc: "300g", dots: 2 },
+                  { value: "large", label: "Large", desc: "400g", dots: 3 },
                 ].map(({ value, label, desc, dots }) => (
                   <button
                     key={value}
@@ -503,81 +514,110 @@ const StudentDashboard = ({ showToast }) => {
         </TabsContent>
 
         <TabsContent value="voting" className="mt-6">
-  <Card>
-    <CardHeader>
-      <CardTitle>Vote for Next Week's Menu</CardTitle>
-    </CardHeader>
+          <Card>
+            <CardHeader>
+              <CardTitle>Vote for Next Week's Menu (Day-wise)</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-6">
+              <Alert className="bg-blue-50 border-blue-200">
+                <Info className="h-4 w-4" />
+                <AlertDescription>
+                  Vote for your preferred menu for each day next week. Each day has unique menu options.
+                </AlertDescription>
+              </Alert>
 
-    <CardContent className="space-y-6">
-      <p className="text-sm text-gray-600">
-        Select one option for Lunch and Dinner. Your vote helps the mess plan better.
-      </p>
+              {["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"].map((day) => (
+                <div key={day} className="border rounded-lg p-4 bg-gray-50">
+                  <h3 className="font-bold text-lg mb-4 text-blue-700">{day}</h3>
 
-      {/* Lunch Voting */}
-      <div className="p-4 border rounded-lg bg-white">
-        <h3 className="font-semibold mb-3">Lunch Vote</h3>
+                  <div className="grid md:grid-cols-2 gap-4">
+                    {/* Lunch */}
+                    <div className="bg-white p-4 rounded-lg border">
+                      <h4 className="font-semibold mb-3 flex items-center gap-2">
+                        <Utensils className="w-4 h-4" />
+                        Lunch Options
+                      </h4>
 
-        <div className="grid md:grid-cols-2 gap-3">
-          {voteOptions.lunch.map((opt, i) => (
-            <button
-              key={i}
-              onClick={() => setSelectedVoteLunch(opt)}
-              className={`p-3 rounded-lg border-2 text-left transition ${
-                selectedVoteLunch === opt
-                  ? "border-green-500 bg-green-50"
-                  : "border-gray-200 hover:border-gray-300"
-              }`}
-            >
-              <div className="font-medium">{opt}</div>
-              <div className="text-xs text-gray-500">
-                Votes: {voteResults.lunch?.[opt] || 0}
-              </div>
-            </button>
-          ))}
-        </div>
+                      <div className="space-y-2">
+                        {(weeklyMenuOptions[day]?.lunch || []).map((option, idx) => {
+                          const voteKey = `${day}_lunch`;
+                          const isSelected = selectedWeeklyVotes[voteKey] === option;
+                          const voteCount = weeklyVoteResults[voteKey]?.[option] || 0;
 
-        <Button className="w-full mt-4" onClick={() => submitVote("lunch")}>
-          Submit Lunch Vote
-        </Button>
-      </div>
+                          return (
+                            <button
+                              key={idx}
+                              onClick={() =>
+                                setSelectedWeeklyVotes({ ...selectedWeeklyVotes, [voteKey]: option })
+                              }
+                              className={`w-full p-3 rounded-lg border-2 text-left transition ${
+                                isSelected
+                                  ? "border-green-500 bg-green-50"
+                                  : "border-gray-200 hover:border-gray-300"
+                              }`}
+                            >
+                              <div className="font-medium text-sm">{option}</div>
+                              <div className="text-xs text-gray-500 mt-1">Votes: {voteCount}</div>
+                            </button>
+                          );
+                        })}
+                      </div>
 
-      {/* Dinner Voting */}
-      <div className="p-4 border rounded-lg bg-white">
-        <h3 className="font-semibold mb-3">Dinner Vote</h3>
+                      <Button
+                        size="sm"
+                        className="w-full mt-3"
+                        onClick={() => submitWeeklyVote(day, "lunch")}
+                      >
+                        Vote for Lunch
+                      </Button>
+                    </div>
 
-        <div className="grid md:grid-cols-2 gap-3">
-          {voteOptions.dinner.map((opt, i) => (
-            <button
-              key={i}
-              onClick={() => setSelectedVoteDinner(opt)}
-              className={`p-3 rounded-lg border-2 text-left transition ${
-                selectedVoteDinner === opt
-                  ? "border-blue-500 bg-blue-50"
-                  : "border-gray-200 hover:border-gray-300"
-              }`}
-            >
-              <div className="font-medium">{opt}</div>
-              <div className="text-xs text-gray-500">
-                Votes: {voteResults.dinner?.[opt] || 0}
-              </div>
-            </button>
-          ))}
-        </div>
+                    {/* Dinner */}
+                    <div className="bg-white p-4 rounded-lg border">
+                      <h4 className="font-semibold mb-3 flex items-center gap-2">
+                        <Utensils className="w-4 h-4" />
+                        Dinner Options
+                      </h4>
 
-        <Button className="w-full mt-4" onClick={() => submitVote("dinner")}>
-          Submit Dinner Vote
-        </Button>
-      </div>
+                      <div className="space-y-2">
+                        {(weeklyMenuOptions[day]?.dinner || []).map((option, idx) => {
+                          const voteKey = `${day}_dinner`;
+                          const isSelected = selectedWeeklyVotes[voteKey] === option;
+                          const voteCount = weeklyVoteResults[voteKey]?.[option] || 0;
 
-      <Alert>
-        <Info className="h-4 w-4" />
-        <AlertDescription>
-          Votes update live after submission. (Refresh if needed.)
-        </AlertDescription>
-      </Alert>
-    </CardContent>
-  </Card>
-</TabsContent>
+                          return (
+                            <button
+                              key={idx}
+                              onClick={() =>
+                                setSelectedWeeklyVotes({ ...selectedWeeklyVotes, [voteKey]: option })
+                              }
+                              className={`w-full p-3 rounded-lg border-2 text-left transition ${
+                                isSelected
+                                  ? "border-blue-500 bg-blue-50"
+                                  : "border-gray-200 hover:border-gray-300"
+                              }`}
+                            >
+                              <div className="font-medium text-sm">{option}</div>
+                              <div className="text-xs text-gray-500 mt-1">Votes: {voteCount}</div>
+                            </button>
+                          );
+                        })}
+                      </div>
+
+                      <Button
+                        size="sm"
+                        className="w-full mt-3"
+                        onClick={() => submitWeeklyVote(day, "dinner")}
+                      >
+                        Vote for Dinner
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </CardContent>
+          </Card>
+        </TabsContent>
 
 
         <TabsContent value="feedback" className="mt-6">
@@ -593,8 +633,22 @@ const StudentDashboard = ({ showToast }) => {
                 Your feedback helps us improve food quality and reduce waste.
               </p>
 
+              {/* STAR RATING */}
               <div>
-                <label className="text-sm font-medium mb-2 block">How was today's food?</label>
+                <label className="text-sm font-medium mb-2 block">Rate today's food</label>
+                <StarRating rating={feedbackRating} onRatingChange={setFeedbackRating} />
+                <p className="text-xs text-gray-500 mt-2">
+                  {feedbackRating === 0 && "Click to rate"}
+                  {feedbackRating === 1 && "⭐ Poor - Major improvements needed"}
+                  {feedbackRating === 2 && "⭐⭐ Below Average - Needs improvement"}
+                  {feedbackRating === 3 && "⭐⭐⭐ Average - Acceptable"}
+                  {feedbackRating === 4 && "⭐⭐⭐⭐ Good - Satisfactory"}
+                  {feedbackRating === 5 && "⭐⭐⭐⭐⭐ Excellent - Outstanding quality"}
+                </p>
+              </div>
+
+              <div>
+                <label className="text-sm font-medium mb-2 block">Additional Comments (Optional)</label>
                 <Textarea
                   placeholder="Tell us about food quality, taste, temperature, portion sizes, or any suggestions..."
                   value={feedback}
@@ -608,34 +662,13 @@ const StudentDashboard = ({ showToast }) => {
                   <Send className="w-4 h-4 mr-2" />
                   {loading ? "Submitting..." : "Submit Feedback"}
                 </Button>
-                <Button variant="outline" onClick={() => setFeedback("")} disabled={loading}>
+                <Button 
+                  variant="outline" 
+                  onClick={() => { setFeedback(""); setFeedbackRating(0); }} 
+                  disabled={loading}
+                >
                   Clear
                 </Button>
-              </div>
-
-              <div className="pt-4 border-t">
-                <h4 className="font-medium mb-3">Quick Ratings</h4>
-                <div className="grid grid-cols-2 gap-3">
-                  <Button
-                    variant="outline"
-                    onClick={() => handleQuickRating("Excellent Food")}
-                    className="h-auto py-4 flex flex-col gap-2"
-                  >
-                    <ThumbsUp className="w-5 h-5 text-green-600" />
-                    <div className="text-sm font-medium">Excellent Food</div>
-                    <div className="text-xs text-gray-500">Great taste & quality</div>
-                  </Button>
-
-                  <Button
-                    variant="outline"
-                    onClick={() => handleQuickRating("Needs Improvement")}
-                    className="h-auto py-4 flex flex-col gap-2"
-                  >
-                    <ThumbsDown className="w-5 h-5 text-red-600" />
-                    <div className="text-sm font-medium">Needs Improvement</div>
-                    <div className="text-xs text-gray-500">Below expectations</div>
-                  </Button>
-                </div>
               </div>
             </CardContent>
           </Card>
@@ -680,9 +713,7 @@ const MessManagerDashboard = () => {
   const [metrics, setMetrics] = useState(null);
   const [feedback, setFeedback] = useState([]);
   const [loading, setLoading] = useState(true);
-const [voteOptions, setVoteOptions] = useState({ lunch: [], dinner: [] });
-const [lunchText, setLunchText] = useState("");
-const [dinnerText, setDinnerText] = useState("");
+const [weeklyMenuDraft, setWeeklyMenuDraft] = useState({});
 
     // ✅ Menu update states (Manager)
   const [menuDraftLunch, setMenuDraftLunch] = useState("");
@@ -763,57 +794,26 @@ const [dinnerText, setDinnerText] = useState("");
     }
   };
 
-const saveVotingOptions = async () => {
-  try {
-    const lunchOptions = lunchText.split("\n").map(x => x.trim()).filter(Boolean);
-    const dinnerOptions = dinnerText.split("\n").map(x => x.trim()).filter(Boolean);
-
-    const res = await fetch(`${API_URL}/voting/options`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ lunchOptions, dinnerOptions }),
-    });
-
-    const data = await res.json();
-
-    if (data.success) {
-      alert("✅ Voting options updated!");
-      fetchAllData(); // refresh manager data
-    } else {
-      alert("❌ Failed to update voting options");
-    }
-  } catch (err) {
-    console.error(err);
-    alert("❌ Error saving voting options");
-  }
-};
-
-
 const fetchAllData = async () => {
   try {
     setLoading(true);
 
-    const [statsRes, metricsRes, feedbackRes, votingRes] = await Promise.all([
+    const [statsRes, metricsRes, feedbackRes, weeklyOptionsRes] = await Promise.all([
       fetch(`${API_URL}/stats/today`),
       fetch(`${API_URL}/metrics`),
       fetch(`${API_URL}/feedback/recent?limit=5`),
-      fetch(`${API_URL}/voting/options`),
+      fetch(`${API_URL}/voting/weekly-options`),
     ]);
 
     const statsData = await statsRes.json();
     const metricsData = await metricsRes.json();
     const feedbackData = await feedbackRes.json();
-    const votingData = await votingRes.json();
+    const weeklyOptionsData = await weeklyOptionsRes.json();
 
-    // ✅ update normal manager sections
     setStats(statsData);
     setMetrics(metricsData);
     setFeedback(feedbackData);
-
-    // ✅ update voting options in manager editor
-    setVoteOptions(votingData);
-    setLunchText((votingData.lunch || []).join("\n"));
-    setDinnerText((votingData.dinner || []).join("\n"));
+    setWeeklyMenuDraft(weeklyOptionsData);
   } catch (error) {
     logger.error("Error fetching manager data", error);
   } finally {
@@ -821,6 +821,44 @@ const fetchAllData = async () => {
   }
 };
 
+const saveWeeklyVotingOptions = async () => {
+  try {
+    const formattedOptions = {};
+    
+    ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"].forEach((day) => {
+      if (weeklyMenuDraft[day]) {
+        formattedOptions[day] = {
+          lunch: weeklyMenuDraft[day]?.lunch
+            ?.split("\n")
+            .map((x) => x.trim())
+            .filter(Boolean) || [],
+          dinner: weeklyMenuDraft[day]?.dinner
+            ?.split("\n")
+            .map((x) => x.trim())
+            .filter(Boolean) || [],
+        };
+      }
+    });
+
+    const res = await fetch(`${API_URL}/voting/weekly-options`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(formattedOptions),
+    });
+
+    const data = await res.json();
+
+    if (data.success) {
+      alert("✅ Weekly voting options updated!");
+      fetchAllData();
+    } else {
+      alert("❌ Failed to update voting options");
+    }
+  } catch (err) {
+    console.error(err);
+    alert("❌ Error saving options");
+  }
+};
 
   const MetricCard = ({ title, value, change, icon: Icon, color, trend }) => (
     <Card>
@@ -900,41 +938,63 @@ const fetchAllData = async () => {
 
 	<Card>
   <CardHeader>
-    <CardTitle>Manage Menu Voting Options (Next Week)</CardTitle>
+    <CardTitle>Manage Weekly Menu Voting Options</CardTitle>
   </CardHeader>
   <CardContent className="space-y-6">
-    <div className="grid md:grid-cols-2 gap-6">
-      <div>
-        <p className="font-medium mb-2">Lunch Options</p>
-        <Textarea
-          value={lunchText}
-          onChange={(e) => setLunchText(e.target.value)}
-          rows={8}
-          placeholder="Enter 1 lunch option per line"
-        />
-      </div>
-
-      <div>
-        <p className="font-medium mb-2">Dinner Options</p>
-        <Textarea
-          value={dinnerText}
-          onChange={(e) => setDinnerText(e.target.value)}
-          rows={8}
-          placeholder="Enter 1 dinner option per line"
-        />
-      </div>
-    </div>
-
-    <Button className="w-full" onClick={saveVotingOptions}>
-      Save Voting Options
-    </Button>
-
     <Alert>
       <Info className="h-4 w-4" />
       <AlertDescription>
-        These options will appear in Student View → Menu Voting automatically.
+        Set unique menu options for each day of the week. Students vote for their preferred menu. Enter one option per line.
       </AlertDescription>
     </Alert>
+
+    {["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"].map((day) => (
+      <div key={day} className="border rounded-lg p-4 bg-gray-50">
+        <h3 className="font-semibold mb-3 text-blue-700">{day}</h3>
+        
+        <div className="grid md:grid-cols-2 gap-4">
+          <div>
+            <label className="text-sm font-medium mb-2 block">Lunch Options</label>
+            <Textarea
+              value={weeklyMenuDraft[day]?.lunch || ""}
+              onChange={(e) =>
+                setWeeklyMenuDraft({
+                  ...weeklyMenuDraft,
+                  [day]: { 
+                    ...weeklyMenuDraft[day], 
+                    lunch: e.target.value 
+                  },
+                })
+              }
+              rows={4}
+              placeholder="Menu 1: Dal Makhani + Rice + Salad&#10;Menu 2: Chole + Kulcha + Raita&#10;Menu 3: Rajma + Jeera Rice"
+            />
+          </div>
+
+          <div>
+            <label className="text-sm font-medium mb-2 block">Dinner Options</label>
+            <Textarea
+              value={weeklyMenuDraft[day]?.dinner || ""}
+              onChange={(e) =>
+                setWeeklyMenuDraft({
+                  ...weeklyMenuDraft,
+                  [day]: { 
+                    ...weeklyMenuDraft[day], 
+                    dinner: e.target.value 
+                  },
+                })
+              }
+              rows={4}
+              placeholder="Menu 1: Paneer Tikka + Naan + Dal&#10;Menu 2: Mix Veg + Roti + Raita&#10;Menu 3: Aloo Gobi + Paratha"
+            />
+          </div>
+        </div>
+      </div>
+    ))}
+
+    <Button className="w-full" onClick={saveWeeklyVotingOptions}>
+      Save All Weekly Options
+    </Button>
   </CardContent>
 </Card>
 		
@@ -1047,34 +1107,34 @@ const fetchAllData = async () => {
                         <div className="flex justify-between mb-2">
                           <span className="text-sm font-medium">Lunch Confirmations</span>
                           <span className="text-sm text-gray-500">
-                            {stats.lunch.yes + stats.lunch.partial} / 500 students
+                            {(stats.lunch.yes || 0) + (stats.lunch.limited || 0) + (stats.lunch.tiffin || 0)} / 500 students
                           </span>
-                        </div>
-                        <div className="w-full bg-gray-200 rounded-full h-3">
-                          <div
-                            className="bg-green-500 h-3 rounded-full"
-                            style={{
-                              width: `${((stats.lunch.yes + stats.lunch.partial) / 500) * 100}%`,
-                            }}
-                          />
-                        </div>
+			</div>
+			<div className="w-full bg-gray-200 rounded-full h-3">
+  			  <div
+    			     className="bg-green-500 h-3 rounded-full"
+                             style={{
+                                width: `${(((stats.lunch.yes || 0) + (stats.lunch.limited || 0) + (stats.lunch.tiffin || 0)) / 500) * 100}%`,
+                             }}
+                            />
+                       </div>
                       </div>
 
                       <div>
                         <div className="flex justify-between mb-2">
-                          <span className="text-sm font-medium">Dinner Confirmations</span>
-                          <span className="text-sm text-gray-500">
-                            {stats.dinner.yes + stats.dinner.partial} / 500 students
-                          </span>
-                        </div>
-                        <div className="w-full bg-gray-200 rounded-full h-3">
-                          <div
-                            className="bg-blue-500 h-3 rounded-full"
-                            style={{
-                              width: `${((stats.dinner.yes + stats.dinner.partial) / 500) * 100}%`,
-                            }}
-                          />
-                        </div>
+  				<span className="text-sm font-medium">Dinner Confirmations</span>
+  				<span className="text-sm text-gray-500">
+    					{(stats.dinner.yes || 0) + (stats.dinner.limited || 0) + (stats.dinner.tiffin || 0)} / 500 students
+ 			 </span>
+			</div>
+			<div className="w-full bg-gray-200 rounded-full h-3">
+  				<div
+    					className="bg-blue-500 h-3 rounded-full"
+    					style={{
+      						width: `${(((stats.dinner.yes || 0) + (stats.dinner.limited || 0) + (stats.dinner.tiffin || 0)) / 500) * 100}%`,
+   				 	}}
+  				/>
+			</div>
                       </div>
                     </div>
 
@@ -1105,29 +1165,34 @@ const fetchAllData = async () => {
 
             <Card>
               <CardHeader>
-                <CardTitle>Recent Feedback</CardTitle>
+                <CardTitle>Recent Feedback with Ratings</CardTitle>
               </CardHeader>
               <CardContent>
                 <div className="space-y-3">
                   {feedback.length > 0 ? (
-                    feedback.map((item) => (
-                      <div key={item.id} className="p-3 bg-gray-50 rounded-lg">
+                    feedback.map((item, idx) => (
+                      <div key={idx} className="p-3 bg-gray-50 rounded-lg">
                         <div className="flex items-start justify-between mb-2">
-                          <span className="font-medium text-sm">{item.name}</span>
+                          <div>
+                            <span className="font-medium text-sm">{item.name}</span>
+                            <div className="flex gap-1 mt-1">
+                              {[1, 2, 3, 4, 5].map((star) => (
+                                <Star
+                                  key={star}
+                                  className={`w-4 h-4 ${
+                                    star <= item.rating
+                                      ? "fill-yellow-400 text-yellow-400"
+                                      : "text-gray-300"
+                                  }`}
+                                />
+                              ))}
+                            </div>
+                          </div>
                           <span className="text-xs text-gray-500">{item.time}</span>
                         </div>
-                        <p className="text-sm text-gray-600">{item.feedback}</p>
-                        <div className="mt-2">
-                          {item.rating === "positive" ? (
-                            <span className="text-xs px-2 py-1 bg-green-100 text-green-700 rounded-full">
-                              Positive
-                            </span>
-                          ) : (
-                            <span className="text-xs px-2 py-1 bg-yellow-100 text-yellow-700 rounded-full">
-                              Neutral
-                            </span>
-                          )}
-                        </div>
+                        {item.feedback && item.feedback !== `${item.rating}-star rating` && (
+                          <p className="text-sm text-gray-600 mt-2">{item.feedback}</p>
+                        )}
                       </div>
                     ))
                   ) : (
