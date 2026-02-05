@@ -714,6 +714,7 @@ const MessManagerDashboard = () => {
   const [feedback, setFeedback] = useState([]);
   const [loading, setLoading] = useState(true);
 const [weeklyMenuDraft, setWeeklyMenuDraft] = useState({});
+const [weeklyVoteResults, setWeeklyVoteResults] = useState({});
 
     // ✅ Menu update states (Manager)
   const [menuDraftLunch, setMenuDraftLunch] = useState("");
@@ -798,22 +799,24 @@ const fetchAllData = async () => {
   try {
     setLoading(true);
 
-    const [statsRes, metricsRes, feedbackRes, weeklyOptionsRes] = await Promise.all([
+    const [statsRes, metricsRes, feedbackRes, weeklyOptionsRes, weeklyResultsRes] = await Promise.all([
       fetch(`${API_URL}/stats/today`),
       fetch(`${API_URL}/metrics`),
       fetch(`${API_URL}/feedback/recent?limit=5`),
       fetch(`${API_URL}/voting/weekly-options`),
+      fetch(`${API_URL}/voting/weekly-results`),
     ]);
-
     const statsData = await statsRes.json();
     const metricsData = await metricsRes.json();
     const feedbackData = await feedbackRes.json();
     const weeklyOptionsData = await weeklyOptionsRes.json();
+    const weeklyResultsData = await weeklyResultsRes.json();
 
     setStats(statsData);
     setMetrics(metricsData);
     setFeedback(feedbackData);
     setWeeklyMenuDraft(weeklyOptionsData);
+    setWeeklyVoteResults(weeklyResultsData);  // ← ADD THIS
   } catch (error) {
     logger.error("Error fetching manager data", error);
   } finally {
@@ -885,7 +888,64 @@ const saveWeeklyVotingOptions = async () => {
       </CardContent>
     </Card>
   );
+const VoteResultCard = ({ day, mealType, options }) => {
+    const voteKey = `${day}_${mealType}`;
+    const votes = weeklyVoteResults[voteKey] || {};
+    
+    // Calculate total votes and find winner
+    let totalVotes = 0;
+    let maxVotes = 0;
+    let winner = "";
+    
+    Object.keys(votes).forEach(option => {
+      const count = votes[option] || 0;
+      totalVotes += count;
+      if (count > maxVotes) {
+        maxVotes = count;
+        winner = option;
+      }
+    });
 
+    return (
+      <div className="bg-white rounded-lg border p-4">
+        <div className="flex items-center justify-between mb-3">
+          <h4 className="font-semibold text-sm">{mealType === "lunch" ? "🍛 Lunch" : "🍽️ Dinner"}</h4>
+          <span className="text-xs bg-blue-100 text-blue-700 px-2 py-1 rounded-full">
+            {totalVotes} votes
+          </span>
+        </div>
+
+        {options && options.length > 0 ? (
+          <div className="space-y-2">
+            {options.map((option, idx) => {
+              const voteCount = votes[option] || 0;
+              const percentage = totalVotes > 0 ? (voteCount / totalVotes * 100) : 0;
+              const isWinner = option === winner && totalVotes > 0;
+
+              return (
+                <div key={idx} className={`p-2 rounded border ${isWinner ? 'border-green-500 bg-green-50' : 'border-gray-200'}`}>
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-xs font-medium truncate">{option}</span>
+                    <span className={`text-xs font-bold ${isWinner ? 'text-green-700' : 'text-gray-600'}`}>
+                      {voteCount} {isWinner && '👑'}
+                    </span>
+                  </div>
+                  <div className="w-full bg-gray-200 rounded-full h-2">
+                    <div
+                      className={`h-2 rounded-full ${isWinner ? 'bg-green-500' : 'bg-blue-400'}`}
+                      style={{ width: `${percentage}%` }}
+                    />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        ) : (
+          <p className="text-xs text-gray-500">No options set</p>
+        )}
+      </div>
+    );
+  };
   return (
     <div className="space-y-6">
       {loading ? (
@@ -934,7 +994,50 @@ const saveWeeklyVotingOptions = async () => {
               </>
             )}
           </div>
-          
+          {/* Weekly Vote Results - ADD THIS ENTIRE SECTION */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <BarChart3 className="w-5 h-5" />
+                Weekly Vote Results (Live)
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-6">
+              <Alert className="bg-purple-50 border-purple-200">
+                <Info className="h-4 w-4" />
+                <AlertDescription>
+                  Real-time voting results from students. The winning option (👑) for each meal is highlighted in green.
+                </AlertDescription>
+              </Alert>
+
+              {["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"].map((day) => (
+                <div key={day} className="border rounded-lg p-4 bg-gray-50">
+                  <h3 className="font-bold text-lg mb-3 text-purple-700">{day}</h3>
+                  
+                  <div className="grid md:grid-cols-2 gap-4">
+                    <VoteResultCard 
+                      day={day} 
+                      mealType="lunch" 
+                      options={weeklyMenuDraft[day]?.lunch || []} 
+                    />
+                    <VoteResultCard 
+                      day={day} 
+                      mealType="dinner" 
+                      options={weeklyMenuDraft[day]?.dinner || []} 
+                    />
+                  </div>
+                </div>
+              ))}
+
+              <Button 
+                variant="outline" 
+                className="w-full"
+                onClick={fetchAllData}
+              >
+                🔄 Refresh Vote Results
+              </Button>
+            </CardContent>
+          </Card>
 
 	<Card>
   <CardHeader>
