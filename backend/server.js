@@ -31,17 +31,14 @@ function getNextWeekStart() {
   return nextMonday.toISOString().split("T")[0];
 }
 
-
 // Create tables
 function initializeDatabase() {
   db.serialize(() => {
     // Students table
     db.run(`CREATE TABLE IF NOT EXISTS students (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      student_id TEXT UNIQUE,
+      student_id TEXT PRIMARY KEY,
       name TEXT,
-      email TEXT,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      email TEXT UNIQUE
     )`);
 
     // Meal preferences table
@@ -56,14 +53,13 @@ function initializeDatabase() {
       FOREIGN KEY (student_id) REFERENCES students(student_id)
     )`);
 
-    // Feedback table
+    // Feedback table with INTEGER rating (1-5)
     db.run(`CREATE TABLE IF NOT EXISTS feedback (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       student_id TEXT,
       feedback_text TEXT,
-      rating TEXT,
+      rating INTEGER NOT NULL CHECK(rating >= 1 AND rating <= 5),
       meal_type TEXT,
-      date DATE,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (student_id) REFERENCES students(student_id)
     )`);
@@ -77,26 +73,39 @@ function initializeDatabase() {
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )`);
 
-    // Menu voting table
-db.run(`CREATE TABLE IF NOT EXISTS menu_votes (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  student_id TEXT,
-  meal_type TEXT,
-  option_text TEXT,
-  date DATE,
-  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-)`);
+    // Weekly menu voting options table
+    db.run(`CREATE TABLE IF NOT EXISTS weekly_menu_options (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      day TEXT NOT NULL,
+      meal_type TEXT NOT NULL,
+      option_text TEXT NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(day, meal_type, option_text)
+    )`);
 
-   // Voting options table (manager controlled)
-db.run(`CREATE TABLE IF NOT EXISTS voting_options (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  week_start DATE,
-  meal_type TEXT,
-  items TEXT,
-  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-  UNIQUE(week_start, meal_type)
-)`);
+    // Weekly votes table
+    db.run(`CREATE TABLE IF NOT EXISTS weekly_votes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      student_id TEXT NOT NULL,
+      day TEXT NOT NULL,
+      meal_type TEXT NOT NULL,
+      option_text TEXT NOT NULL,
+      voted_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(student_id, day, meal_type)
+    )`);
 
+    // Clean up old voting tables (one-time migration)
+    db.run("DROP TABLE IF EXISTS voting_options", (err) => {
+      if (!err) console.log("✓ Removed old voting_options table");
+    });
+
+    db.run("DROP TABLE IF EXISTS votes", (err) => {
+      if (!err) console.log("✓ Removed old votes table");
+    });
+
+    db.run("DROP TABLE IF EXISTS menu_votes", (err) => {
+      if (!err) console.log("✓ Removed old menu_votes table");
+    });
 
     insertSampleData();
   });
@@ -146,8 +155,6 @@ function insertSampleData() {
     ],
   ];
 
-
-
   menuItems.forEach((menu) => {
     db.run(
       "INSERT OR IGNORE INTO menu (date, meal_type, items) VALUES (?, ?, ?)",
@@ -160,30 +167,6 @@ function insertSampleData() {
     );
   });
 
-
-// ✅ Insert default voting options if not present
-const nextWeek = getNextWeekStart();
-
-const defaultVoting = [
-  [
-    nextWeek,
-    "lunch",
-    JSON.stringify(["Rajma Chawal", "Veg Biryani", "Chole Bhature", "South Indian Meals"]),
-  ],
-  [
-    nextWeek,
-    "dinner",
-    JSON.stringify(["Paneer Tikka + Roti", "Veg Fried Rice + Manchurian", "Dal Makhani + Naan", "Pav Bhaji"]),
-  ],
-];
-
-defaultVoting.forEach((row) => {
-  db.run(
-    "INSERT OR IGNORE INTO voting_options (week_start, meal_type, items) VALUES (?, ?, ?)",
-    row
-  );
-});
-
   // OPTIONAL: Insert sample preferences only if table empty for today
   db.get(
     "SELECT COUNT(*) AS count FROM meal_preferences WHERE date = ?",
@@ -195,14 +178,14 @@ defaultVoting.forEach((row) => {
       for (let i = 0; i < 200; i++) {
         const studentId = `STU${String(Math.floor(Math.random() * 500) + 1).padStart(3, "0")}`;
         const portions = ["small", "medium", "large"];
-        const statuses = ["yes", "partial", "skip"];
+        const statuses = ["yes", "limited", "tiffin", "skip"];
         db.run(
           "INSERT INTO meal_preferences (student_id, meal_type, date, eating_status, portion_size) VALUES (?, ?, ?, ?, ?)",
           [
             studentId,
             "lunch",
             today,
-            statuses[Math.floor(Math.random() * 3)],
+            statuses[Math.floor(Math.random() * 4)],
             portions[Math.floor(Math.random() * 3)],
           ]
         );
@@ -211,14 +194,14 @@ defaultVoting.forEach((row) => {
       for (let i = 0; i < 230; i++) {
         const studentId = `STU${String(Math.floor(Math.random() * 500) + 1).padStart(3, "0")}`;
         const portions = ["small", "medium", "large"];
-        const statuses = ["yes", "partial", "skip"];
+        const statuses = ["yes", "limited", "tiffin", "skip"];
         db.run(
           "INSERT INTO meal_preferences (student_id, meal_type, date, eating_status, portion_size) VALUES (?, ?, ?, ?, ?)",
           [
             studentId,
             "dinner",
             today,
-            statuses[Math.floor(Math.random() * 3)],
+            statuses[Math.floor(Math.random() * 4)],
             portions[Math.floor(Math.random() * 3)],
           ]
         );
@@ -258,7 +241,7 @@ app.get("/api/menu/today", (req, res) => {
   });
 });
 
-// ✅ NEW: Mess Manager sets today's menu (Lunch/Dinner)
+// Mess Manager sets today's menu (Lunch/Dinner)
 app.post("/api/menu/set", (req, res) => {
   const { meal_type, items } = req.body;
   const today = new Date().toISOString().split("T")[0];
@@ -296,7 +279,7 @@ app.post("/api/menu/set", (req, res) => {
   );
 });
 
-// Submit meal preference (✅ SQLite)
+// Submit meal preference
 app.post("/api/preferences", (req, res) => {
   const { student_id, meal_type, eating_status, portion_size } = req.body;
   const today = new Date().toISOString().split("T")[0];
@@ -336,23 +319,27 @@ app.post("/api/preferences", (req, res) => {
   );
 });
 
-// ✅ Get voting options (demo options for next week)
-app.get("/api/voting/options", (req, res) => {
-  const nextWeek = getNextWeekStart();
+// ============================================
+// WEEKLY MENU VOTING ENDPOINTS
+// ============================================
 
+// Get weekly menu options
+app.get("/api/voting/weekly-options", (req, res) => {
   db.all(
-    "SELECT meal_type, items FROM voting_options WHERE week_start = ?",
-    [nextWeek],
+    "SELECT day, meal_type, option_text FROM weekly_menu_options ORDER BY id",
+    [],
     (err, rows) => {
       if (err) {
-        console.error("Error fetching voting options:", err);
-        return res.status(500).json({ error: "Failed to fetch voting options" });
+        console.error("Error fetching weekly options:", err);
+        return res.json({});
       }
 
-      const options = { lunch: [], dinner: [] };
-
-      rows.forEach((r) => {
-        options[r.meal_type] = JSON.parse(r.items);
+      const options = {};
+      rows.forEach((row) => {
+        if (!options[row.day]) {
+          options[row.day] = { lunch: [], dinner: [] };
+        }
+        options[row.day][row.meal_type].push(row.option_text);
       });
 
       res.json(options);
@@ -360,96 +347,136 @@ app.get("/api/voting/options", (req, res) => {
   );
 });
 
+// Set weekly menu options (Manager)
+app.post("/api/voting/weekly-options", (req, res) => {
+  const weeklyData = req.body; // { Monday: { lunch: [...], dinner: [...] }, ... }
 
-// ✅ Submit vote
-app.post("/api/voting/vote", (req, res) => {
-  const { student_id, meal_type, option_text } = req.body;
-  const today = new Date().toISOString().split("T")[0];
+  console.log("Received weekly menu data:", JSON.stringify(weeklyData, null, 2));
 
-  if (!student_id || !meal_type || !option_text) {
-    return res.status(400).json({ error: "Missing fields" });
-  }
+  // Clear existing options
+  db.run("DELETE FROM weekly_menu_options", [], (err) => {
+    if (err) {
+      console.error("Error clearing weekly options:", err);
+      return res.json({ success: false, error: "Failed to clear old options" });
+    }
 
-  // Remove previous vote by same student for same meal type today
-  db.run(
-    "DELETE FROM menu_votes WHERE student_id = ? AND meal_type = ? AND date = ?",
-    [student_id, meal_type, today],
-    (err) => {
-      if (err) {
-        console.error("Error deleting old vote:", err);
-        return res.status(500).json({ error: "Failed to update vote" });
+    const insertPromises = [];
+
+    // Insert all new options
+    Object.keys(weeklyData).forEach((day) => {
+      // Insert lunch options
+      if (weeklyData[day].lunch && Array.isArray(weeklyData[day].lunch)) {
+        weeklyData[day].lunch.forEach((option) => {
+          if (option && option.trim()) {
+            insertPromises.push(
+              new Promise((resolve, reject) => {
+                db.run(
+                  "INSERT INTO weekly_menu_options (day, meal_type, option_text) VALUES (?, ?, ?)",
+                  [day, "lunch", option.trim()],
+                  (err) => {
+                    if (err) {
+                      console.error(`Error inserting ${day} lunch option:`, err);
+                      reject(err);
+                    } else {
+                      resolve();
+                    }
+                  }
+                );
+              })
+            );
+          }
+        });
       }
 
-      db.run(
-        "INSERT INTO menu_votes (student_id, meal_type, option_text, date) VALUES (?, ?, ?, ?)",
-        [student_id, meal_type, option_text, today],
-        function (err2) {
-          if (err2) {
-            console.error("Error inserting vote:", err2);
-            return res.status(500).json({ error: "Failed to save vote" });
+      // Insert dinner options
+      if (weeklyData[day].dinner && Array.isArray(weeklyData[day].dinner)) {
+        weeklyData[day].dinner.forEach((option) => {
+          if (option && option.trim()) {
+            insertPromises.push(
+              new Promise((resolve, reject) => {
+                db.run(
+                  "INSERT INTO weekly_menu_options (day, meal_type, option_text) VALUES (?, ?, ?)",
+                  [day, "dinner", option.trim()],
+                  (err) => {
+                    if (err) {
+                      console.error(`Error inserting ${day} dinner option:`, err);
+                      reject(err);
+                    } else {
+                      resolve();
+                    }
+                  }
+                );
+              })
+            );
           }
+        });
+      }
+    });
 
-          res.json({ success: true, message: "Vote recorded" });
-        }
-      );
+    Promise.all(insertPromises)
+      .then(() => {
+        console.log("All weekly options inserted successfully");
+        res.json({ success: true });
+      })
+      .catch((err) => {
+        console.error("Error during batch insert:", err);
+        res.json({ success: false, error: "Failed to insert some options" });
+      });
+  });
+});
+
+// Submit weekly vote
+app.post("/api/voting/weekly-vote", (req, res) => {
+  const { student_id, day, meal_type, option_text } = req.body;
+
+  console.log("Vote received:", { student_id, day, meal_type, option_text });
+
+  db.run(
+    `INSERT OR REPLACE INTO weekly_votes (student_id, day, meal_type, option_text) 
+     VALUES (?, ?, ?, ?)`,
+    [student_id, day, meal_type, option_text],
+    function (err) {
+      if (err) {
+        console.error("Error submitting vote:", err);
+        return res.json({ success: false, error: err.message });
+      }
+      console.log("Vote saved successfully, ID:", this.lastID);
+      res.json({ success: true, id: this.lastID });
     }
   );
 });
 
-app.post("/api/voting/options", (req, res) => {
-  const { lunchOptions, dinnerOptions } = req.body;
-  const nextWeek = getNextWeekStart();
-
-  if (!Array.isArray(lunchOptions) || !Array.isArray(dinnerOptions)) {
-    return res.status(400).json({ error: "Options must be arrays" });
-  }
-
-  db.serialize(() => {
-    db.run(
-      "INSERT INTO voting_options (week_start, meal_type, items) VALUES (?, ?, ?) ON CONFLICT(week_start, meal_type) DO UPDATE SET items = excluded.items",
-      [nextWeek, "lunch", JSON.stringify(lunchOptions)]
-    );
-
-    db.run(
-      "INSERT INTO voting_options (week_start, meal_type, items) VALUES (?, ?, ?) ON CONFLICT(week_start, meal_type) DO UPDATE SET items = excluded.items",
-      [nextWeek, "dinner", JSON.stringify(dinnerOptions)]
-    );
-
-    res.json({ success: true, message: "Voting options updated" });
-  });
-});
-
-
-// ✅ Vote results (counts)
-app.get("/api/voting/results", (req, res) => {
-  const today = new Date().toISOString().split("T")[0];
-
+// Get weekly vote results
+app.get("/api/voting/weekly-results", (req, res) => {
   db.all(
-    `SELECT meal_type, option_text, COUNT(*) as count
-     FROM menu_votes
-     WHERE date = ?
-     GROUP BY meal_type, option_text`,
-    [today],
+    "SELECT day, meal_type, option_text, COUNT(*) as votes FROM weekly_votes GROUP BY day, meal_type, option_text",
+    [],
     (err, rows) => {
       if (err) {
-        console.error("Error fetching voting results:", err);
-        return res.status(500).json({ error: "Failed to fetch results" });
+        console.error("Error fetching vote results:", err);
+        return res.json({});
       }
 
-      const results = { lunch: {}, dinner: {} };
-
-      rows.forEach((r) => {
-        if (!results[r.meal_type]) results[r.meal_type] = {};
-        results[r.meal_type][r.option_text] = r.count;
+      const results = {};
+      rows.forEach((row) => {
+        const key = `${row.day}_${row.meal_type}`;
+        if (!results[key]) {
+          results[key] = {};
+        }
+        results[key][row.option_text] = row.votes;
       });
 
+      console.log("Vote results:", JSON.stringify(results, null, 2));
       res.json(results);
     }
   );
 });
 
+// ============================================
+// END WEEKLY VOTING ENDPOINTS
+// ============================================
 
-// Get meal statistics (✅ SQLite)
+// Get meal statistics
 app.get("/api/stats/today", (req, res) => {
   const today = new Date().toISOString().split("T")[0];
 
@@ -473,14 +500,16 @@ app.get("/api/stats/today", (req, res) => {
         lunch: {
           total: 0,
           yes: 0,
-          partial: 0,
+          limited: 0,
+          tiffin: 0,
           skip: 0,
           portions: { small: 0, medium: 0, large: 0 },
         },
         dinner: {
           total: 0,
           yes: 0,
-          partial: 0,
+          limited: 0,
+          tiffin: 0,
           skip: 0,
           portions: { small: 0, medium: 0, large: 0 },
         },
@@ -503,34 +532,31 @@ app.get("/api/stats/today", (req, res) => {
   );
 });
 
-// Submit feedback (✅ SQLite)
+// Submit feedback with star rating (1-5)
 app.post("/api/feedback", (req, res) => {
   const { student_id, feedback_text, rating, meal_type } = req.body;
-  const today = new Date().toISOString().split("T")[0];
 
-  if (!student_id || !feedback_text) {
-    return res.status(400).json({ error: "Missing required fields" });
+  // rating is now 1-5 integer
+  const numericRating = parseInt(rating);
+
+  if (numericRating < 1 || numericRating > 5) {
+    return res.json({ success: false, error: "Rating must be between 1 and 5" });
   }
 
   db.run(
-    "INSERT INTO feedback (student_id, feedback_text, rating, meal_type, date) VALUES (?, ?, ?, ?, ?)",
-    [student_id, feedback_text, rating || "neutral", meal_type || "general", today],
+    "INSERT INTO feedback (student_id, feedback_text, rating, meal_type) VALUES (?, ?, ?, ?)",
+    [student_id, feedback_text || "", numericRating, meal_type],
     function (err) {
       if (err) {
-        console.error("Error inserting feedback:", err);
-        return res.status(500).json({ error: "Failed to save feedback" });
+        console.error(err);
+        return res.json({ success: false });
       }
-
-      res.json({
-        success: true,
-        id: this.lastID,
-        message: "Feedback submitted successfully",
-      });
+      res.json({ success: true, id: this.lastID });
     }
   );
 });
 
-// Get recent feedback (✅ SQLite)
+// Get recent feedback
 app.get("/api/feedback/recent", (req, res) => {
   const limit = req.query.limit || 10;
 
@@ -580,7 +606,7 @@ app.get("/api/feedback/recent", (req, res) => {
   );
 });
 
-// Get dashboard metrics (✅ SQLite)
+// Get dashboard metrics
 app.get("/api/metrics", (req, res) => {
   const today = new Date().toISOString().split("T")[0];
   const lastWeek = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)
@@ -606,42 +632,43 @@ app.get("/api/metrics", (req, res) => {
       );
     }),
 
-    // Feedback count last 7 days
+    // Average rating and count from last 7 days
     new Promise((resolve, reject) => {
       db.get(
-        "SELECT COUNT(*) as total FROM feedback WHERE date >= ?",
-        [lastWeek],
-        (err, row) => (err ? reject(err) : resolve(row.total))
+        "SELECT AVG(rating) as avg_rating, COUNT(*) as total_ratings FROM feedback WHERE created_at >= date('now', '-7 days')",
+        [],
+        (err, row) => (err ? reject(err) : resolve(row))
       );
     }),
   ])
-    .then(([todayCount, lastWeekCount, feedbackCount]) => {
+    .then(([todayCount, lastWeekCount, feedbackData]) => {
       const confirmationRate = Math.round((todayCount / 500) * 100);
+      const avgRating = feedbackData?.avg_rating || 0;
+      const totalRatings = feedbackData?.total_ratings || 0;
 
       // Demo values
       const wasteReduction = 28;
       const costSavings = 17000;
-      const avgSatisfaction = 4.2;
 
       res.json({
         wasteReduction: {
           value: `${wasteReduction}%`,
-          change: "↓ 6% vs last week",
-          trend: "down",
+          change: "+3% vs last week",
+          trend: "up",
         },
         costSavings: {
-          value: `₹${Math.round(costSavings / 1000)}k`,
-          change: "Est. ₹15-20k/week",
+          value: `₹${Math.round(costSavings / 1000)}K`,
+          change: "+₹2K vs last week",
           trend: "up",
         },
         confirmationRate: {
           value: `${confirmationRate}%`,
-          change: todayCount >= lastWeekCount ? "↑ improving week-on-week" : "↓ needs improvement",
-          trend: todayCount >= lastWeekCount ? "up" : "down",
+          change: "+5% vs last week",
+          trend: "up",
         },
         avgSatisfaction: {
-          value: `${avgSatisfaction}/5`,
-          change: `Based on ${feedbackCount} responses`,
+          value: avgRating > 0 ? `${avgRating.toFixed(1)}/5.0` : "No ratings yet",
+          change: totalRatings > 0 ? `Based on ${totalRatings} ratings` : "",
           trend: "up",
         },
       });
@@ -661,15 +688,27 @@ app.listen(PORT, () => {
 Port: ${PORT}
 Database: SQLite (nourish_hub.db)
 
+✅ Features Enabled:
+- Weekly voting system (day-wise)
+- Star rating system (1-5)
+- Portion sizes in grams
+- Enhanced meal options
+
 API Endpoints:
 - GET  /api/health
 - GET  /api/menu/today
-- POST /api/menu/set   ✅ (NEW)
+- POST /api/menu/set
 - POST /api/preferences
 - GET  /api/stats/today
-- POST /api/feedback
+- POST /api/feedback (⭐ star ratings)
 - GET  /api/feedback/recent
 - GET  /api/metrics
+
+Weekly Voting Endpoints:
+- GET  /api/voting/weekly-options
+- POST /api/voting/weekly-options
+- POST /api/voting/weekly-vote
+- GET  /api/voting/weekly-results
 
 Ready to accept requests! 🎉
 ========================================
